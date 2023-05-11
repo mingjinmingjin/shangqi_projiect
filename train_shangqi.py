@@ -22,7 +22,7 @@ import sys
 import tqdm
 from PR_curve import compute_map
 
-sys.path.append("../HiVT2")
+sys.path.append("../shangqi_project")
 if __name__ == '__main__':
     torch.manual_seed(1234)
     parser = ArgumentParser()
