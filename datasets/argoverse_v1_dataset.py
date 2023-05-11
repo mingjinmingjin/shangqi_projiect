@@ -24,7 +24,7 @@ from torch_geometric.data import Data
 from torch_geometric.data import Dataset
 from tqdm import tqdm
 import sys
-sys.path.append("/ssd/taomingjin/venv/HiVT2")
+#sys.path.append("/ssd/taomingjin/venv/HiVT2")
 from utils import TemporalData
 
 
