@@ -15,7 +15,7 @@ import os
 from itertools import permutations
 from itertools import product
 from typing import Callable, Dict, List, Optional, Tuple, Union
-
+import json
 import numpy as np
 import pandas as pd
 import torch
@@ -24,8 +24,9 @@ from torch_geometric.data import Data
 from torch_geometric.data import Dataset
 from tqdm import tqdm
 import sys
-#sys.path.append("/ssd/taomingjin/venv/HiVT2")
+# sys.path.append("/ssd/taomingjin/venv/HiVT2")
 from utils import TemporalData
+import json
 
 
 class ArgoverseV1Dataset(Dataset):
@@ -35,36 +36,48 @@ class ArgoverseV1Dataset(Dataset):
                  split: str,
                  transform: Optional[Callable] = None,
                  local_radius: float = 50) -> None:
-        self._split = split
+        # self._split = split
         self._local_radius = local_radius
-        self._url = f'https://s3.amazonaws.com/argoai-argoverse/forecasting_{split}_v1.1.tar.gz'
-        if split == 'sample':
-            self._directory = 'forecasting_sample'
-        elif split == 'train':
-            self._directory = 'train'
-        elif split == 'val':
-            self._directory = 'val'
-        elif split == 'test':
-            self._directory = 'test_obs'
-        else:
-            raise ValueError(split + ' is not valid')
+        # self._url = f'https://s3.amazonaws.com/argoai-argoverse/forecasting_{split}_v1.1.tar.gz'
+        # if split == 'sample':
+        #     self._directory = 'forecasting_sample'
+        # elif split == 'train':
+        #     self._directory = 'train'
+        # elif split == 'val':
+        #     self._directory = 'val'
+        # elif split == 'test':
+        #     self._directory = 'test_obs'
+        # else:
+        #     raise ValueError(split + ' is not valid')
         self.root = root
-        self._raw_file_names = os.listdir(self.raw_dir)
-        self._processed_file_names = [os.path.splitext(f)[0] + '.pt' for f in self.raw_file_names]
+        # self._raw_file_names = os.listdir(self.raw_dir)
+        self._raw_file_names = self.raw_file_names
+        self._processed_file_names = [f.strip().split("/")[-1] + ".pt" for f in self._raw_file_names]
         self._processed_paths = [os.path.join(self.processed_dir, f) for f in self._processed_file_names]
+        self.json_file = os.path.join(self.processed_dir, "pathmapping.json")
+        self.path_mapping = {}
+        # if os.path.exists(self.json_file):
+        #     # 读取data和target文件映射
+        #     with open(self.json_file, "r") as f:
+        #         self.path_mapping = json.load(f)
         super(ArgoverseV1Dataset, self).__init__(root, transform=transform)
 
-    @property
-    def raw_dir(self) -> str:
-        return os.path.join(self.root, self._directory, 'data')
+    # @property
+    # def raw_dir(self) -> str:
+    #     return os.path.join(self.root, self._directory, 'data')
 
     @property
     def processed_dir(self) -> str:
-        #return os.path.join(self.root, self._directory, 'processed')
-        return os.path.join("/ssd/taomingjin/mingjintran",self._directory, 'processed')
+        process_dir_name = os.path.join("/ssd/share", 'shangqi_data_processed')
+        if not os.path.exists(process_dir_name):
+            os.makedirs(process_dir_name)
+
+        return process_dir_name
 
     @property
     def raw_file_names(self) -> Union[str, List[str], Tuple]:
+        with open(self.root, "r") as file:
+            self._raw_file_names = file.readlines()
         return self._raw_file_names
 
     @property
@@ -77,18 +90,57 @@ class ArgoverseV1Dataset(Dataset):
 
     def process(self) -> None:
         am = ArgoverseMap()
-        for raw_path in tqdm([self.raw_paths[0]]):
-            kwargs = process_argoverse(self._split, raw_path, am, self._local_radius)
+        # for raw_path in tqdm(self.raw_file_names):
+        #     kwargs = process_argoverse(self._split, raw_path, am, self._local_radius)
+        #     data = TemporalData(**kwargs)
+        #     torch.save(data, os.path.join(self.processed_dir, str(kwargs['seq_id']) + '.pt'))
+        # mycode
+        # break
+        with open('/ssd/share/shangqi_data/scene_mapping.json','r') as json_file:
+            scene_mapping = json.load(json_file)
+        with open('/ssd/share/shangqi_data/scene_tag.json','r') as json_file:
+            scene_tag = json.load(json_file)
+        for raw_path in tqdm(self.raw_file_names):
+            kwargs,seq_id = process_argoverse2(raw_path.strip(),scene_mapping,scene_tag)
+            if kwargs is None:
+                continue
             data = TemporalData(**kwargs)
-            torch.save(data, os.path.join(self.processed_dir, str(kwargs['seq_id']) + '.pt'))
-            #mycode
-            # break
+            torch.save(data, os.path.join(self.processed_dir, seq_id + '.pt'))
+            # self.path_mapping[os.path.join(self.processed_dir, kwargs['seq_id'] + '.pt')] = raw_path.strip()
+        # json_file = os.path.join(self.processed_dir, "pathmapping.json")
+        # if not os.path.exists(json_file):
+        #     # 如果文件不存在，创建一个新的JSON文件并将字典保存到其中
+        #     with open(json_file, "w") as f:
+        #         json.dump(self.path_mapping, f)
 
     def len(self) -> int:
         return len(self._raw_file_names)
 
     def get(self, idx) -> Data:
-        return torch.load(self.processed_paths[idx])
+        process_data = self.processed_paths[idx]
+        # raw_path = self.path_mapping[process_data]
+        # bagInfo_path = os.path.join(raw_path, 'bagInfo.json')  # 先打开bagInfo文件，提取出开始时间，持续时间
+        # with open(bagInfo_path) as f:
+        #     json_data = json.load(f)
+        #     start = json_data['start']
+        #     duration1 = json_data['duration']
+        # with open('/ssd/taomingjin/venv/HiVT2/scene_tag.json') as json_file:
+        #     scene_tag = json.load(json_file)
+        # scene_data = []
+        # for file_name in os.listdir(raw_path):  # 遍历文件夹下的所有文件
+        #     if file_name.endswith('scenario_records.json'):
+        #         file_path = os.path.join(raw_path, file_name)  # 获取文件的完整路径
+        #         with open(file_path, 'r') as f:  # 打开文件
+        #             json_data = json.load(f)  # 解析JSON数据
+        #             scene = json_data['scenario'][0]['scene_tag']
+        #             scene_start = max(json_data['scenario'][0]['t0'] - start, 0)
+        #             scene_end = json_data['scenario'][0]['tN'] - start
+        #
+        #             scene_data.append([0, scene_tag[scene], scene_start, scene_end])
+        #             if scene_end < 0:
+        #                 return None, None
+        # scene_data = np.stack(scene_data, axis=0)
+        return torch.load(process_data)
 
 
 def process_argoverse(split: str,
@@ -186,61 +238,96 @@ def process_argoverse(split: str,
         'theta': theta,
     }
 
-def process_argoverse2(dir_path,
-                      raw_path: str,
-                      ) -> Dict:
+
+def process_argoverse2(
+        raw_path: str,
+        scene_mapping,
+        scene_tag
+) -> Dict:
     # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    device = torch.device( "cpu")
-    df = pd.read_csv(raw_path[0]).head(350)
-    df1=pd.read_csv(raw_path[1])
-    len1=df.shape[0]
+    device = torch.device("cpu")
+    bagInfo_path = os.path.join(raw_path, 'bagInfo.json')  # 先打开bagInfo文件，提取出开始时间，持续时间
+    with open(bagInfo_path) as f:
+        json_data = json.load(f)
+        start = json_data['start']
+        duration1 = json_data['duration']
+
+    scene_data = []
+    for file_name in os.listdir(raw_path):  # 遍历文件夹下的所有文件
+        if file_name.endswith('scenario_records.json'):
+            file_path = os.path.join(raw_path, file_name)  # 获取文件的完整路径
+            with open(file_path, 'r') as f:  # 打开文件
+                json_data = json.load(f)  # 解析JSON数据
+                for i in range(len(json_data['scenario'])):
+                    scene = json_data['scenario'][i]['scene_tag']
+                    scene_start = max(json_data['scenario'][i]['t0'] - start, 0)
+                    scene_end = json_data['scenario'][i]['tN'] - start
+                    if scene_end>0:
+                        scene_data.append([0, scene_tag[scene_mapping[scene]], scene_start, scene_end])
+    scene_data = torch.from_numpy(np.stack(scene_data, axis=0))
+
+    df = pd.read_csv(os.path.join(raw_path, "ego.csv")).head(350)
+    df1 = pd.read_csv(os.path.join(raw_path, "obj.csv"))
+    len1 = df.shape[0]
     last_row = df.iloc[-1]
-    for i in range(350-len1):
+    for i in range(350 - len1):
         df = df._append(last_row, ignore_index=True)
     # filter out actors that are unseen during the historical time steps
-    timestamps_ego=list(np.sort(df['SimTime(s)'].unique()))
-    timestamps_obj=list(np.sort(df1['SimTime(s)'].unique()))
-    obj_in_ego=df1[df1['SimTime(s)'].isin(timestamps_ego)]
+    timestamps_ego = list(np.sort(df['SimTime(s)'].unique()))
+    timestamps_obj = list(np.sort(df1['SimTime(s)'].unique()))
+    obj_in_ego = df1[df1['SimTime(s)'].isin(timestamps_ego)]
     actor_ids = list(df1['TrackID'].unique())
-    num_nodes = len(actor_ids)+1
-
+    num_nodes = len(actor_ids) + 1
 
     origin = torch.tensor([df.iloc[0]['X_utm(m)'], df.iloc[0]['Y_utm(m)']], dtype=torch.float).to(device)
-    x=torch.zeros(num_nodes,350,2,dtype=torch.float).to(device)
+    x = torch.zeros(num_nodes, 350, 2, dtype=torch.float).to(device)
     edge_index = torch.LongTensor(list(permutations(range(num_nodes), 2))).t().contiguous().to(device)
-    padding_mask = torch.ones(num_nodes, 350, dtype=torch.bool,device=device)
-    bos_mask = torch.zeros(num_nodes, 350, dtype=torch.bool,device=device)
-    padding_mask[0,:len1]=False
+    padding_mask = torch.ones(num_nodes, 350, dtype=torch.bool, device=device)
+    bos_mask = torch.zeros(num_nodes, 350, dtype=torch.bool, device=device)
+    padding_mask[0, :len1] = False
     # initialization
-    rotate_angles = torch.zeros(num_nodes, dtype=torch.float,device=device)
+    rotate_angles = torch.zeros(num_nodes, dtype=torch.float, device=device)
 
     for actor_id, actor_df in obj_in_ego.groupby('TrackID'):
-        node_idx = actor_ids.index(actor_id)+1
+        node_idx = actor_ids.index(actor_id) + 1
         node_steps = [timestamps_ego.index(timestamp) for timestamp in actor_df['SimTime(s)']]
         padding_mask[node_idx, node_steps] = False
-        xy = torch.from_numpy(np.stack([actor_df['X_utm(m)'].values, actor_df['Y_utm(m)'].values], axis=-1)).float().to(device)
-        x[node_idx, node_steps] = xy-origin
+        xy = torch.from_numpy(np.stack([actor_df['X_utm(m)'].values, actor_df['Y_utm(m)'].values], axis=-1)).float().to(
+            device)
+        x[node_idx, node_steps] = xy - origin
         if len(node_steps) > 1:  # calculate the heading of the actor (approximately)
             heading_vector = x[node_idx, node_steps[-1]] - x[node_idx, node_steps[-2]]
             rotate_angles[node_idx] = torch.atan2(heading_vector[1], heading_vector[0])
         else:  # make no predictions for the actor if the number of valid time steps is less than 2
             padding_mask[node_idx, :] = True
     xy = torch.from_numpy(np.stack([df['X_utm(m)'].values, df['Y_utm(m)'].values], axis=-1)).float().to(device)
-    x[0]=xy-origin
-    head=x[0,len1-1]-x[0,len1-2]
-    rotate_angles[0]=torch.atan2(head[1],head[0])
+    x[0] = xy - origin
+    head = x[0, len1 - 1] - x[0, len1 - 2]
+    rotate_angles[0] = torch.atan2(head[1], head[0])
     # bos_mask is True if time step t is valid and time step t-1 is invalid
     bos_mask[:, 0] = ~padding_mask[:, 0]
-    bos_mask[:, 1: ] = padding_mask[:, : -1] & ~padding_mask[:, 1: ]
+    bos_mask[:, 1:] = padding_mask[:, : -1] & ~padding_mask[:, 1:]
 
     positions = x.clone()
-    x[:, 1: ] = torch.where((padding_mask[:, : -1] | padding_mask[:, 1: ]).unsqueeze(-1),
-                              torch.zeros(num_nodes, 350-1, 2).to(device),
-                              x[:, 1: ] - x[:, : -1])
+    x[:, 1:] = torch.where((padding_mask[:, : -1] | padding_mask[:, 1:]).unsqueeze(-1),
+                           torch.zeros(num_nodes, 350 - 1, 2).to(device),
+                           x[:, 1:] - x[:, : -1])
 
     x[:, 0] = torch.zeros(num_nodes, 2)
-    Temporaldata=TemporalData(x,positions,edge_index,num_nodes=num_nodes,padding_mask=padding_mask,bos_mask=bos_mask,
-                      rotate_angles=rotate_angles)
+
+
+    seq_id = raw_path.split("/")[-1]
+    return {
+        'x': x,  # [N, T, 2]
+        'positions': positions,  # [N, T, 2]
+        'edge_index': edge_index,  # [2, N x N - 1]
+        'num_nodes': num_nodes,
+        'padding_mask': padding_mask,  # [N, T]
+        'bos_mask': bos_mask,  # [N, T]
+        'rotate_angles': rotate_angles,  # [N]
+        'origin': origin.unsqueeze(0),
+        'y' : scene_data
+    },seq_id
     # return {
     #     'x': x,  # [N, T, 2]
     #     'positions': positions,  # [N, T, 2]
@@ -251,8 +338,6 @@ def process_argoverse2(dir_path,
     #     'rotate_angles': rotate_angles,  # [N]
     #     'origin': origin.unsqueeze(0),
     # }
-    torch.save(Temporaldata,dir_path+"hedian.pt")
-    return Temporaldata
 
 
 def get_lane_features(am: ArgoverseMap,
@@ -262,7 +347,7 @@ def get_lane_features(am: ArgoverseMap,
                       rotate_mat: torch.Tensor,
                       city: str,
                       radius: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-                                              torch.Tensor]:
+torch.Tensor]:
     lane_positions, lane_vectors, is_intersections, turn_directions, traffic_controls = [], [], [], [], []
     lane_ids = set()
     for node_position in node_positions:
@@ -303,7 +388,8 @@ def get_lane_features(am: ArgoverseMap,
 
     return lane_vectors, is_intersections, turn_directions, traffic_controls, lane_actor_index, lane_actor_vectors
 
+
 if __name__ == '__main__':
     # process_argoverse("train","/ssd/share/argoverse_motion_forecasting/train/data/1.csv",ArgoverseMap(),50.0)
-    process_argoverse2("train",["/ssd/taomingjin/starting_left_turn/PL069_20221102-161817/ego.csv",
-                               "/ssd/taomingjin/starting_left_turn/PL069_20221102-161817/obj.csv" ])
+    process_argoverse2("train", ["/ssd/taomingjin/starting_left_turn/PL069_20221102-161817/ego.csv",
+                                 "/ssd/taomingjin/starting_left_turn/PL069_20221102-161817/obj.csv"])

@@ -28,13 +28,9 @@ class ShangqiDataset(Dataset):
         scene_data=[]
         for file_name in os.listdir(dir_path):  # 遍历文件夹下的所有文件
             if file_name.endswith('scenario_records.json'):
-                # 如果文件是scenario_JSON文件
-                # count+=1
                 file_path = os.path.join(dir_path, file_name)  # 获取文件的完整路径
                 with open(file_path, 'r') as f:  # 打开文件
                     json_data = json.load(f)  # 解析JSON数据
-                    # 处理JSON数据，例如打印数据
-                    # print(json_data)
                     scene=json_data['scenario'][0]['scene_tag']
                     scene_start=max(json_data['scenario'][0]['t0']-start,0)
                     scene_end=json_data['scenario'][0]['tN']-start
@@ -48,6 +44,7 @@ class ShangqiDataset(Dataset):
 
     def __len__(self):
         return len(self.dir_path)
+
 
 
 def collate_fn(batch):

@@ -17,8 +17,8 @@ from pytorch_lightning import LightningDataModule
 from torch_geometric.data import DataLoader
 
 from datasets import ArgoverseV1Dataset
-
-
+import numpy as np
+import torch
 class ArgoverseV1DataModule(LightningDataModule):
 
     def __init__(self,
@@ -60,3 +60,12 @@ class ArgoverseV1DataModule(LightningDataModule):
     def val_dataloader(self):
         return DataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=self.num_workers,
                           pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
+
+def collate_fn(batch):
+    batch= [data for data in batch if data[0] is not None]
+    data,label=list(zip(*batch))
+    for i, box in enumerate(label):
+        box[:, 0] = i
+    boxes=np.concatenate(label,axis=0)
+    target_box=torch.from_numpy(boxes)
+    return data,target_box
