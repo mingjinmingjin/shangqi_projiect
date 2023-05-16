@@ -19,8 +19,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-#from losses import LaplaceNLLLoss
-#from losses import SoftTargetCrossEntropyLoss
+# from losses import LaplaceNLLLoss
+# from losses import SoftTargetCrossEntropyLoss
 from models import GlobalInteractor
 from models import LocalEncoder
 from models import MLPDecoder
@@ -60,15 +60,22 @@ class HiVT(pl.LightningModule):
         self.weight_decay = weight_decay
         self.T_max = T_max
         self.anchor_num = 2
-        self.dim = 40
+        self.cls_num = 13
+        self.dim = 17
         self.second = [1, 3.5, 7]
         self.mlp = {}
-        self.device1 = torch.device("cpu")
+        self.device1 = torch.device('cpu')
+        self.mlp1 = nn.Linear(640, self.dim * 2)
+        self.mlp2 = nn.Linear(2240, self.dim * 2)
+        self.mlp3 = nn.Linear(4480, self.dim * 2)
+        self.mlp[1] = self.mlp1
+        self.mlp[3.5] = self.mlp2
+        self.mlp[7] = self.mlp3
 
-        for i in self.second:
-            self.mlp[i] = nn.Linear(int(64 * i * 10), 80)
-            self.mlp[i].weight = torch.nn.Parameter(self.mlp[i].weight.to(self.device1))
-            self.mlp[i].bias = torch.nn.Parameter(self.mlp[i].bias.to(self.device1))
+        # for i in self.second:
+        #     self.mlp[i] = nn.Linear(int(64 * i * 10), 80)
+        #     self.mlp[i].weight = torch.nn.Parameter(self.mlp[i].weight)
+        #     self.mlp[i].bias = torch.nn.Parameter(self.mlp[i].bias)
 
         self.local_encoder = LocalEncoder(historical_steps=historical_steps,
                                           node_dim=node_dim,
@@ -97,20 +104,19 @@ class HiVT(pl.LightningModule):
         self.obj_loss = BCEFocalLosswithLogits()
         self.cls_loss = CrossEntropyFocalLoss()
 
-
     def forward(self, temporaldata: TemporalData):
         embed = []
         for data in temporaldata:
             if self.rotate:
-                rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device)
+                rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device1)
                 sin_vals = torch.sin(data['rotate_angles'])
                 cos_vals = torch.cos(data['rotate_angles'])
                 rotate_mat[:, 0, 0] = cos_vals
                 rotate_mat[:, 0, 1] = -sin_vals
                 rotate_mat[:, 1, 0] = sin_vals
                 rotate_mat[:, 1, 1] = cos_vals
-                if data.y is not None:
-                    data.y = torch.bmm(data.y, rotate_mat)
+                # if data.y is not None:
+                #     data.y = torch.bmm(data.y, rotate_mat)
                 data['rotate_mat'] = rotate_mat
             else:
                 data['rotate_mat'] = None
@@ -121,7 +127,8 @@ class HiVT(pl.LightningModule):
 
         return predict
 
-    #计算损失
+
+    # 计算损失
     def compute_loss(self, pre, true, ):
         '''
         pre:预测框 350帧*64维
@@ -138,8 +145,8 @@ class HiVT(pl.LightningModule):
         loss = self.reg_cls_obj_loss(reg_box, true, cls, obj)
         return loss
 
-    #测试代码
-    def test(self, pre,):
+    # 测试代码
+    def test(self, pre, ):
         predict = {}
         for sec in self.second:
             predict_bbox, predict_obj, predict_cls = self.get_predict_bbox_label(pre, sec)
@@ -202,7 +209,7 @@ class HiVT(pl.LightningModule):
         # 计算Giou Loss
         obj_boxes = torch.gather(target_boxes, 1, best_gt_inds.expand(-1, -1, 4))
         giou_total_loss = self.giou_loss(predicted_boxes, obj_boxes[:, :, -2:], best_gt_ious)
-        giou_actual_loss = torch.mean(giou_total_loss[mask.squeeze(-1) > 0])  #只对正样本进行计算
+        giou_actual_loss = torch.mean(giou_total_loss[mask.squeeze(-1) > 0])  # 只对正样本进行计算
         # 计算Smooth L1 Loss
         # diff = predicted_boxes[..., 0, :] - target_boxes[..., 0]
         # diff = predicted_boxes - obj_boxes
@@ -265,12 +272,12 @@ class HiVT(pl.LightningModule):
         num_video, sec = x.shape[0], x.shape[1]
         x = x.reshape(num_video, sec, self.anchor_num, self.dim)
         top = torch.arange(0, sec).unsqueeze(-1).to(local_embed.device)
-        center = x[:, :, :, 36].sigmoid() + top
-        boundL1 = torch.exp(x[:, :, 1, 37])
-        boundL2 = torch.exp(x[:, :, 0, 37] - math.log(2))
+        center = x[:, :, :, self.cls_num].sigmoid() + top
+        boundL1 = torch.exp(x[:, :, 1, self.cls_num+1])
+        boundL2 = torch.exp(x[:, :, 0, self.cls_num+1] - math.log(2))
         boundL = torch.stack((boundL2, boundL1), dim=-1)
-        boundR1 = torch.exp(x[:, :, 1, 38])
-        boundR2 = torch.exp(x[:, :, 0, 38] - math.log(2))
+        boundR1 = torch.exp(x[:, :, 1, self.cls_num+2])
+        boundR2 = torch.exp(x[:, :, 0, self.cls_num+2] - math.log(2))
         boundR = torch.stack((boundR2, boundR1), dim=-1)
 
         left = torch.clamp(center - boundL, 0, sec)
@@ -279,8 +286,8 @@ class HiVT(pl.LightningModule):
         bbox2 = torch.stack((left[:, :, 1], right[:, :, 1]), -1)
         predict_bbox = torch.stack((bbox1, bbox2), dim=-2)
         predict_bbox = predict_bbox * second
-        predict_obj = x[:, :, :, 39].unsqueeze(-1).sigmoid()
-        predict_cls = x[:, :, :, :36].sigmoid()
+        predict_obj = x[:, :, :, self.cls_num+3].unsqueeze(-1).sigmoid()
+        predict_cls = x[:, :, :, :self.cls_num].sigmoid()
         return predict_bbox, predict_obj, predict_cls
 
     def one_dimensional_nms(self, boxes, threshold=0.5):
@@ -343,5 +350,3 @@ class HiVT(pl.LightningModule):
         parser.add_argument('--weight_decay', type=float, default=1e-4)
         parser.add_argument('--T_max', type=int, default=64)
         return parent_parser
-
-

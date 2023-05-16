@@ -21,7 +21,7 @@ from models.hivt import HiVT
 import sys
 import tqdm
 from PR_curve import compute_map
-
+import torch.nn as nn
 sys.path.append("../shangqi_project")
 if __name__ == '__main__':
     torch.manual_seed(1234)
@@ -38,8 +38,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_top_k', type=int, default=5)
     parser = HiVT.add_model_specific_args(parser)
     args = parser.parse_args()
-    dataset = ShangqiDataset("/ssd/share/shangqi_data/last_dir_path.txt")
-    device = torch.device("cpu")
+    dataset = ShangqiDataset("/ssd/share/shangqi_data_processed")
+    device = torch.device('cpu')
+
     num_workers = args.num_workers
     torch.multiprocessing.set_start_method('spawn')
     torch.multiprocessing.set_sharing_strategy('file_system')
@@ -67,6 +68,9 @@ if __name__ == '__main__':
                              num_workers=num_workers)
 
     model = HiVT(**vars(args))
+    # if torch.cuda.device_count() > 1:
+    #     print("使用", torch.cuda.device_count(), "个GPU进行训练。")
+    # model = nn.DataParallel(model,device_ids=[0,3,4])
     model = model.to(device)
     # 定义损失函数和优化器
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
@@ -74,7 +78,7 @@ if __name__ == '__main__':
     # 初始化最小loss值为无穷大
     min_loss = float("inf")
 
-    home_path = os.path.expanduser("~/shangqi_train")
+    home_path = os.path.expanduser("~/train_log")
     print(home_path)
 
     # 开始训练模型
@@ -82,11 +86,16 @@ if __name__ == '__main__':
         # 在每个 epoch 开始前，将模型设置为训练模式
         model.train()
         giou_loss_train = []
-        for batch_idx, (data, target) in enumerate(tqdm.tqdm(train_loader, desc=f"Training Epoch {epoch}")):
-            target = target.to(device)
+        for batch_idx, (datas,target) in enumerate(tqdm.tqdm(train_loader, desc=f"Training Epoch {epoch}")):
+            if batch_idx==0: print(1)
+            target=target.to(device)
+            for data in datas:
+                for name, tensor in vars(data).items():
+                    if isinstance(tensor, torch.Tensor):
+                        setattr(data, name, tensor.to(device))
             with torch.autograd.set_detect_anomaly(True):
                 optimizer.zero_grad()
-                output = model(data)
+                output = model(datas)
                 giou_loss, obj_loss, cls_loss = model.compute_loss(output, target)
                 loss = giou_loss + obj_loss * 0.3 + cls_loss * 0.05
                 giou_loss.backward(retain_graph=True)

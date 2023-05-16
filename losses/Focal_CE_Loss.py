@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class CrossEntropyFocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=0.2, reduction='mean'):
+    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
         super(CrossEntropyFocalLoss, self).__init__()
         self.reduction = reduction
         self.alpha = alpha
