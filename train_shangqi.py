@@ -22,6 +22,7 @@ import sys
 import tqdm
 from PR_curve import compute_map
 import torch.nn as nn
+
 sys.path.append("../shangqi_project")
 if __name__ == '__main__':
     torch.manual_seed(1234)
@@ -29,7 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--train_batch_size', type=int, default=32)
     parser.add_argument('--val_batch_size', type=int, default=32)
     parser.add_argument('--shuffle', type=bool, default=True)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--pin_memory', type=bool, default=True)
     parser.add_argument('--persistent_workers', type=bool, default=True)
     parser.add_argument('--gpus', type=int, default=1)
@@ -38,7 +39,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_top_k', type=int, default=5)
     parser = HiVT.add_model_specific_args(parser)
     args = parser.parse_args()
-    dataset = ShangqiDataset("/ssd/share/shangqi_data_processed")
+    dataset = ShangqiDataset("/ssd/share/shangqi_data/one_obj.txt")
     device = torch.device('cpu')
 
     num_workers = args.num_workers
@@ -47,23 +48,20 @@ if __name__ == '__main__':
     num_class = 36
     # 定义训练集、验证集和测试集的比例
     train_ratio = 0.8
-    val_ratio = 0.1
-    test_ratio = 0.1
+    # val_ratio = 0.1
+    test_ratio = 0.2
 
     # 计算每个数据集的大小
     train_size = int(train_ratio * len(dataset))
-    val_size = int(val_ratio * len(dataset))
-    test_size = len(dataset) - train_size - val_size
+    test_size = len(dataset) - train_size
 
     # 使用 random_split 函数划分数据集
-    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+    train_dataset,  test_dataset = random_split(dataset, [train_size, test_size])
 
     # 定义 DataLoader
     batch_size = 16
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn,
                               num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn,
-                            num_workers=num_workers)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn,
                              num_workers=num_workers)
 
@@ -76,8 +74,8 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     test_set = []
     # 初始化最小loss值为无穷大
-    min_loss = float("inf")
-
+    min_reg_loss = float("inf")
+    max_pre_acc=float("-inf")
     home_path = os.path.expanduser("~/train_log")
     print(home_path)
 
@@ -85,10 +83,10 @@ if __name__ == '__main__':
     for epoch in range(args.max_epochs):
         # 在每个 epoch 开始前，将模型设置为训练模式
         model.train()
-        giou_loss_train = []
-        for batch_idx, (datas,target) in enumerate(tqdm.tqdm(train_loader, desc=f"Training Epoch {epoch}")):
-            if batch_idx==0: print(1)
-            target=target.to(device)
+        reg_loss_train = []
+        cls_loss_train = []
+        for batch_idx, (datas, target) in enumerate(tqdm.tqdm(train_loader, desc=f"Training Epoch {epoch}")):
+            target = target.to(device)
             for data in datas:
                 for name, tensor in vars(data).items():
                     if isinstance(tensor, torch.Tensor):
@@ -96,42 +94,55 @@ if __name__ == '__main__':
             with torch.autograd.set_detect_anomaly(True):
                 optimizer.zero_grad()
                 output = model(datas)
-                giou_loss, obj_loss, cls_loss = model.compute_loss(output, target)
-                loss = giou_loss + obj_loss * 0.3 + cls_loss * 0.05
-                giou_loss.backward(retain_graph=True)
-                giou_loss_train.append(giou_loss.item())
+                reg_loss, cls_loss = model.compute_loss(output, target)
+                loss = reg_loss + cls_loss
+                loss.backward(retain_graph=True)
+                reg_loss_train.append(reg_loss.item())
+                cls_loss_train.append(cls_loss.item())
                 optimizer.step()
                 if batch_idx % 3 == 0:
-                    print('Epoch: {}, Batch: {}, Loss: {} , Giou Loss: {}， obj Loss: {} , cls Loss:{}'.format(epoch,
-                                                                                                              batch_idx,
-                                                                                                              loss.item(),
-                                                                                                              giou_loss.item(),
-                                                                                                              obj_loss.item(),
-                                                                                                              cls_loss.item()))
-                    with open(home_path+"/train_loss_per_batch.txt", "a+") as f:
+                    print('Epoch: {}, Batch: {}, Loss: {} , reg Loss: {} , cls Loss:{}'.format(epoch,
+                                                                                                batch_idx,
+                                                                                                loss.item(),
+                                                                                                reg_loss.item(),
+                                                                                                cls_loss.item()))
+                    with open(home_path + "/train_loss_per_batch.txt", "a+") as f:
                         f.write(
-                            f'Epoch: {epoch}, Batch: {batch_idx}, giou Loss: {giou_loss.item()} , obj Loss: {obj_loss.item()} ,cls Loss:{cls_loss.item() * 0.1}\n')
-        #每个epoch后，保存giou_loss最小的模型参数                
-        if sum(giou_loss_train) / len(giou_loss_train) < loss:
-            min_loss = sum(giou_loss_train) / len(giou_loss_train)
-            torch.save(model.state_dict(), home_path+"/best_model_params.pth")
-        print('Epoch: {}, avg Giou Loss: {}'.format(epoch, sum(giou_loss_train) / len(giou_loss_train)))
-        with open(home_path+"/giou_loss_per_epoch.txt", "a+") as f:
-            f.write(f'Epoch: {epoch}, giou Loss: {sum(giou_loss_train) / len(giou_loss_train)} \n')
+                            f'Epoch: {epoch}, Batch: {batch_idx}, reg Loss: {reg_loss.item()}  ,cls Loss:{cls_loss.item()}\n')
+
+        print('Epoch: {}, avg reg Loss: {}'.format(epoch, sum(reg_loss_train) / len(reg_loss_train)))
+        with open(home_path + "/reg_loss_per_epoch.txt", "a+") as f:
+            f.write(f'Epoch: {epoch}, giou Loss: {sum(reg_loss_train) / len(reg_loss_train)} \n')
+        print('Epoch: {}, avg cls Loss: {}'.format(epoch, sum(cls_loss_train) / len(cls_loss_train)))
+        with open(home_path + "/cls_loss_per_epoch.txt", "a+") as f:
+            f.write(f'Epoch: {epoch}, cls Loss: {sum(cls_loss_train) / len(cls_loss_train)} \n')
 
         # 在每个 epoch 结束后，评估模型在测试集上的表现
-        # model.eval()
-        # test_loss = 0
-        # correct = 0
-        # with torch.no_grad():
-        #     for data, target in test_loader:
-        #         output = model(data)
-        #        //测试模型
-        #         test_loss += criterion(output, target).item()
-        #         pred = output.argmax(dim=1, keepdim=True)
-        #         correct += pred.eq(target.view_as(pred)).sum().item()
-        #
-        # test_loss /= len(test_loader.dataset)
-        #
-        # print('Epoch: {}, Test Loss: {}, Test Accuracy: {}%'.format(
-        #     epoch, test_loss, 100. * correct / len(test_loader.dataset)))
+        model.eval()
+        test_loss = 0.
+        correct = 0.
+        with torch.no_grad():
+            for datas, target in test_loader:
+                for data in datas:
+                    for name, tensor in vars(data).items():
+                        if isinstance(tensor, torch.Tensor):
+                            setattr(data, name, tensor.to(device))
+                output = model(datas)
+                # //测试模型
+                reg_loss, correct_pre = model.test_model(output, target)
+                test_loss += reg_loss
+                correct += correct_pre
+
+        avg_test_loss = test_loss / len(test_dataset)
+        avg_correct_pre = correct / len(test_dataset)
+        if avg_test_loss < min_reg_loss:
+            min_reg_loss =avg_test_loss
+            torch.save(model.state_dict(), home_path + "/best_model_reg_params_epoch:{}.pth".format(epoch))
+        if avg_correct_pre > max_pre_acc:
+            max_pre_acc =avg_correct_pre
+            torch.save(model.state_dict(), home_path + "/best_model_cls_params_epoch:{}.pth".format(epoch))
+        print('Epoch: {}, reg Loss: {}, cls Accuracy: {}%'.format(
+            epoch, avg_test_loss, 100. * avg_correct_pre))
+        with open(home_path + "/test_loss_per_epoch.txt", "a+") as f:
+            f.write(f'Epoch: {epoch}, reg Loss: {avg_test_loss} , cls acc: {avg_correct_pre} \n')
+

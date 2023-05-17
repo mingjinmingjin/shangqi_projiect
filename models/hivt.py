@@ -71,6 +71,8 @@ class HiVT(pl.LightningModule):
         self.mlp[1] = self.mlp1
         self.mlp[3.5] = self.mlp2
         self.mlp[7] = self.mlp3
+        self.output1=nn.Linear(64,1)
+        self.output2=nn.Linear(self.historical_steps,self.cls_num+2)
 
         # for i in self.second:
         #     self.mlp[i] = nn.Linear(int(64 * i * 10), 80)
@@ -124,8 +126,8 @@ class HiVT(pl.LightningModule):
             local_embed = self.local_encoder(data=data)
             embed.append(local_embed[:, 0, :])
         predict = torch.stack(embed, dim=0)
-
-        return predict
+        predict_res=self.output2(self.output1(predict).flatten(-2,-1))
+        return predict_res
 
 
     # 计算损失
@@ -134,17 +136,38 @@ class HiVT(pl.LightningModule):
         pre:预测框 350帧*64维
         true:真实框
         '''
-        predict = {}
-        # self.second: 1秒,3.5秒，7秒
-        for sec in self.second:
-            predict_bbox, predict_obj, predict_cls = self.get_predict_bbox_label(pre, sec)
-            predict[sec] = [predict_bbox, predict_cls, predict_obj]
-        reg_box = torch.cat((predict[self.second[0]][0], predict[self.second[1]][0], predict[self.second[2]][0]), dim=1)
-        cls = torch.cat((predict[self.second[0]][1], predict[self.second[1]][1], predict[self.second[2]][1]), dim=1)
-        obj = torch.cat((predict[self.second[0]][2], predict[self.second[1]][2], predict[self.second[2]][2]), dim=1)
-        loss = self.reg_cls_obj_loss(reg_box, true, cls, obj)
-        return loss
+        predict_cls=torch.sigmoid(pre[:,:self.cls_num])
+        predict_cen=torch.sigmoid(pre[:,self.cls_num:self.cls_num+1])*35
+        predict_len=torch.sigmoid(pre[:,self.cls_num+1:self.cls_num+2])*35
+        predict_box=torch.cat((torch.clamp(predict_cen-0.5*predict_len,0,35),torch.clamp(predict_cen+0.5*predict_len,0,35)),dim=-1)
+        true_box=true[:,2:]
+        diff = torch.abs(true_box - predict_box)
+        mask = (diff < 1.0).bool()
+        reg_loss = torch.where(mask, 0.5 * diff ** 2, diff - 0.5).mean()
+        true_label=true[:,1:2].long()
+        class_loss=self.cls_loss(predict_cls,true_label)
 
+        return reg_loss,class_loss
+
+    def test_model(self, pre, true, ):
+        '''
+        pre:预测框 350帧*64维
+        true:真实框
+        '''
+        predict_cls = torch.sigmoid(pre[:, :self.cls_num])
+        predict_cen = torch.sigmoid(pre[:, self.cls_num:self.cls_num + 1]) * 35
+        predict_len = torch.sigmoid(pre[:, self.cls_num + 1:self.cls_num + 2]) * 35
+        predict_box = torch.cat(
+            (torch.clamp(predict_cen - 0.5 * predict_len, 0, 35), torch.clamp(predict_cen + 0.5 * predict_len, 0, 35)),
+            dim=-1)
+        true_box = true[:, 2:]
+        diff = torch.abs(true_box - predict_box)
+        mask = (diff < 1.0).bool()
+        reg_loss = torch.where(mask, 0.5 * diff ** 2, diff - 0.5).sum()
+        true_label = true[:, 1:2].long()
+        pre_label_index=predict_cls.argmax(-1)
+        correct_pre = torch.sum(pre_label_index == true_label.flatten())
+        return reg_loss, correct_pre
     # 测试代码
     def test(self, pre, ):
         predict = {}
