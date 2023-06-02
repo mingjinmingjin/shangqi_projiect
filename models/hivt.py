@@ -104,29 +104,78 @@ class HiVT(pl.LightningModule):
         self.obj_loss = BCEFocalLosswithLogits()
         self.cls_loss = CrossEntropyFocalLoss()
 
-    def forward(self, temporaldata: TemporalData):
+    # def forward(self, temporaldata: TemporalData):
+    #     embed = []
+    #     for data in temporaldata:
+    #         if self.rotate:
+    #             rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device1)
+    #             sin_vals = torch.sin(data['rotate_angles'])
+    #             cos_vals = torch.cos(data['rotate_angles'])
+    #             rotate_mat[:, 0, 0] = cos_vals
+    #             rotate_mat[:, 0, 1] = -sin_vals
+    #             rotate_mat[:, 1, 0] = sin_vals
+    #             rotate_mat[:, 1, 1] = cos_vals
+    #             # if data.y is not None:
+    #             #     data.y = torch.bmm(data.y, rotate_mat)
+    #             data['rotate_mat'] = rotate_mat
+    #         else:
+    #             data['rotate_mat'] = None
+    def forward(self, data: TemporalData):
         embed = []
-        for data in temporaldata:
-            if self.rotate:
-                rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device1)
-                sin_vals = torch.sin(data['rotate_angles'])
-                cos_vals = torch.cos(data['rotate_angles'])
-                rotate_mat[:, 0, 0] = cos_vals
-                rotate_mat[:, 0, 1] = -sin_vals
-                rotate_mat[:, 1, 0] = sin_vals
-                rotate_mat[:, 1, 1] = cos_vals
-                # if data.y is not None:
-                #     data.y = torch.bmm(data.y, rotate_mat)
-                data['rotate_mat'] = rotate_mat
-            else:
-                data['rotate_mat'] = None
-
-            local_embed = self.local_encoder(data=data)
-            embed.append(local_embed[:, 0, :])
+        # for data in temporaldata:
+        if self.rotate:
+            rotate_mat = torch.empty(data.num_nodes, 2, 2, device=self.device)
+            sin_vals = torch.sin(data['rotate_angles'])
+            cos_vals = torch.cos(data['rotate_angles'])
+            rotate_mat[:, 0, 0] = cos_vals
+            rotate_mat[:, 0, 1] = -sin_vals
+            rotate_mat[:, 1, 0] = sin_vals
+            rotate_mat[:, 1, 1] = cos_vals
+            # if data.y is not None:
+            #     data.y = torch.bmm(data.y, rotate_mat)
+            data['rotate_mat'] = rotate_mat
+        else:
+            data['rotate_mat'] = None
+        local_embed = self.local_encoder(data=data)
+        embed.append(local_embed[:, 0, :])
         predict = torch.stack(embed, dim=0)
 
-        return predict
+        return predict,data.y
 
+    def training_step(self, batch, batch_idx):
+        pre ,target= self(batch)
+        # reg_mask = ~data['padding_mask'][:, self.historical_steps:]
+        # valid_steps = reg_mask.sum(dim=-1)
+        # cls_mask = valid_steps > 0
+        # l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
+        # best_mode = l2_norm.argmin(dim=0)
+        # y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
+        # reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
+        # soft_target = F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()
+        # cls_loss = self.cls_loss(pi[cls_mask], soft_target)
+        # loss = reg_loss + cls_loss
+        # self.log('train_reg_loss', reg_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+        giou_loss, obj_loss, cls_loss = self.compute_loss(pre, target)
+        loss = giou_loss + obj_loss * 0.3 + cls_loss * 0.05
+        self.log('giou_loss', giou_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        pre, target = self(batch)
+        # reg_mask = ~data['padding_mask'][:, self.historical_steps:]
+        # valid_steps = reg_mask.sum(dim=-1)
+        # cls_mask = valid_steps > 0
+        # l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
+        # best_mode = l2_norm.argmin(dim=0)
+        # y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
+        # reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
+        # soft_target = F.softmax(-l2_norm[:, cls_mask] / valid_steps[cls_mask], dim=0).t().detach()
+        # cls_loss = self.cls_loss(pi[cls_mask], soft_target)
+        # loss = reg_loss + cls_loss
+        # self.log('train_reg_loss', reg_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
+        giou_loss, obj_loss, cls_loss = self.compute_loss(pre, target)
+        loss = giou_loss + obj_loss * 0.3 + cls_loss * 0.05
+        self.log('giou_loss', giou_loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=1)
 
     # 计算损失
     def compute_loss(self, pre, true, ):
@@ -329,6 +378,40 @@ class HiVT(pl.LightningModule):
         cls_label = torch.argmax(boxes[:, :, 3:], dim=-1)
         boxes = torch.cat((boxes[:, :, :3], cls_label.unsqueeze(-1)), dim=-1)
         return boxes, keep
+
+    def configure_optimizers(self):
+        decay = set()
+        no_decay = set()
+        whitelist_weight_modules = (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.MultiheadAttention, nn.LSTM, nn.GRU)
+        blacklist_weight_modules = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.LayerNorm, nn.Embedding)
+        for module_name, module in self.named_modules():
+            for param_name, param in module.named_parameters():
+                full_param_name = '%s.%s' % (module_name, param_name) if module_name else param_name
+                if 'bias' in param_name:
+                    no_decay.add(full_param_name)
+                elif 'weight' in param_name:
+                    if isinstance(module, whitelist_weight_modules):
+                        decay.add(full_param_name)
+                    elif isinstance(module, blacklist_weight_modules):
+                        no_decay.add(full_param_name)
+                elif not ('weight' in param_name or 'bias' in param_name):
+                    no_decay.add(full_param_name)
+        param_dict = {param_name: param for param_name, param in self.named_parameters()}
+        inter_params = decay & no_decay
+        union_params = decay | no_decay
+        assert len(inter_params) == 0
+        assert len(param_dict.keys() - union_params) == 0
+
+        optim_groups = [
+            {"params": [param_dict[param_name] for param_name in sorted(list(decay))],
+             "weight_decay": self.weight_decay},
+            {"params": [param_dict[param_name] for param_name in sorted(list(no_decay))],
+             "weight_decay": 0.0},
+        ]
+
+        optimizer = torch.optim.AdamW(optim_groups, lr=self.lr, weight_decay=self.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer=optimizer, T_max=self.T_max, eta_min=0.0)
+        return [optimizer], [scheduler]
 
     @staticmethod
     def add_model_specific_args(parent_parser):
